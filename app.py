@@ -1,101 +1,122 @@
-from flask import Flask, request, jsonify, send_from_directory
+import json
+from pathlib import Path
+from typing import Optional, Any
+
 import pandas as pd
-import numpy as np
-
-app = Flask(__name__, static_folder='.', static_url_path='')
-
-
-def safe_value(value):
-    if isinstance(value, (np.generic, np.ndarray)):
-        return np.asarray(value).item()
-    if pd.isna(value):
-        return None
-    return value
+import streamlit as st
+import streamlit.components.v1 as components
 
 
-def read_uploaded_file(uploaded_file):
-    filename = uploaded_file.filename.lower()
-    if filename.endswith('.csv') or uploaded_file.content_type == 'text/csv':
+def read_uploaded_file(uploaded_file) -> pd.DataFrame:
+    filename = uploaded_file.name.lower()
+    if filename.endswith('.csv') or uploaded_file.type == 'text/csv':
         return pd.read_csv(uploaded_file)
     if filename.endswith('.xlsx'):
         return pd.read_excel(uploaded_file, engine='openpyxl')
     if filename.endswith('.xls'):
         return pd.read_excel(uploaded_file)
-    raise ValueError('Unsupported file format. Please upload CSV or Excel.')
+    raise ValueError('Unsupported file format. Please upload a CSV or Excel file.')
 
 
-def build_forecast(values, periods=3):
-    values = np.asarray(values, dtype=float)
+def build_forecast(values: list[float], periods: int = 3) -> list[float]:
+    values = [float(v) for v in values]
     n = len(values)
     if n < 2:
-        return [float(values[-1]) if n else 0.0 for _ in range(periods)]
-    x = np.arange(n, dtype=float)
-    m, b = np.polyfit(x, values, 1)
-    future_x = np.arange(n, n + periods, dtype=float)
-    return (m * future_x + b).tolist()
+        return [values[-1] if n else 0.0 for _ in range(periods)]
+
+    x = list(range(n))
+    mean_x = sum(x) / n
+    mean_y = sum(values) / n
+    numerator = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, values))
+    denominator = sum((xi - mean_x) ** 2 for xi in x)
+    m = numerator / denominator if denominator else 0.0
+    b = mean_y - m * mean_x
+    future_x = list(range(n, n + periods))
+    return [m * xi + b for xi in future_x]
 
 
-@app.route('/')
-def index():
-    return send_from_directory('.', 'index.html')
-
-
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    uploaded_file = request.files.get('file')
-    if not uploaded_file:
-        return jsonify({'error': 'No file uploaded.'}), 400
-
-    try:
-        df = read_uploaded_file(uploaded_file)
-    except Exception as exc:
-        return jsonify({'error': str(exc)}), 400
-
+def make_analysis_payload(df: pd.DataFrame) -> dict[str, Any]:
     df = df.dropna(how='all')
-    numeric_df = df.select_dtypes(include=[np.number])
+    numeric_df = df.select_dtypes(include=['number'])
     if numeric_df.empty:
-        return jsonify({'error': 'No numeric columns found for analysis.'}), 400
+        raise ValueError('The uploaded file does not contain numeric columns for analysis.')
 
-    summary_stats = {}
+    summary_stats: dict[str, dict[str, float]] = {}
     for column in numeric_df.columns:
         series = numeric_df[column].dropna().astype(float)
         summary_stats[column] = {
-            'mean': safe_value(series.mean()),
-            'sum': safe_value(series.sum()),
-            'max': safe_value(series.max()),
-            'min': safe_value(series.min()),
+            'mean': float(series.mean()),
+            'sum': float(series.sum()),
+            'max': float(series.max()),
+            'min': float(series.min()),
         }
 
     chart_column = numeric_df.columns[0]
-    numeric_series = numeric_df[chart_column].dropna().astype(float)
+    numeric_series = numeric_df[chart_column].dropna().astype(float).tolist()
     chart_labels = [str(i + 1) for i in range(len(numeric_series))]
-    chart_values = numeric_series.tolist()
-    forecast_values = build_forecast(chart_values, periods=3)
+    forecast_values = build_forecast(numeric_series, periods=3)
     forecast_labels = [f'Next {i}' for i in range(1, 4)]
 
     table_data = df.head(50).fillna('').astype(str).to_dict(orient='records')
-    columns = df.columns.tolist()
 
-    response = {
+    return {
         'summary_stats': summary_stats,
         'chart_data': {
             'labels': chart_labels,
-            'values': chart_values,
+            'values': numeric_series,
             'seriesName': chart_column,
         },
         'forecast_data': {
             'labels': forecast_labels,
-            'values': [safe_value(x) for x in forecast_values],
+            'values': [float(value) for value in forecast_values],
             'seriesName': chart_column,
         },
         'table_data': table_data,
-        'columns': columns,
+        'columns': df.columns.tolist(),
         'row_count': int(df.shape[0]),
         'chart_column': chart_column,
     }
 
-    return jsonify(response)
+
+def load_html_template() -> str:
+    path = Path(__file__).parent / 'index.html'
+    return path.read_text(encoding='utf-8')
 
 
-if __name__ == '__main__':
-    app.run(debug=True)
+def inject_streamlit_payload(html: str, payload: Optional[dict[str, Any]]) -> str:
+    if payload is None:
+        return html
+
+    payload_json = json.dumps(payload)
+    injection = (
+        '<script>'
+        f'window.projectData = {payload_json};'
+        'window.postMessage({ type: "PROJECT_DATA", payload: window.projectData }, "*");'
+        '</script>'
+    )
+    return html.replace('</body>', f'{injection}</body>')
+
+
+st.set_page_config(page_title='Streamlit BI Dashboard', layout='wide')
+
+st.sidebar.title('Upload Dataset')
+uploaded_file = st.sidebar.file_uploader(
+    'Upload CSV or Excel file', type=['csv', 'xlsx', 'xls']
+)
+
+analysis_payload = None
+if uploaded_file is not None:
+    try:
+        dataframe = read_uploaded_file(uploaded_file)
+        analysis_payload = make_analysis_payload(dataframe)
+    except Exception as exc:
+        st.sidebar.error(str(exc))
+
+st.markdown(
+    '### Streamlit Dashboard Integration\n'
+    'Upload your file through the sidebar uploader. The embedded dashboard uses your dataset for analysis and chart rendering.',
+)
+
+html_content = load_html_template()
+html_content = inject_streamlit_payload(html_content, analysis_payload)
+components.html(html_content, height=1600, scrolling=True)

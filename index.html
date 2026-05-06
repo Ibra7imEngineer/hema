@@ -598,19 +598,20 @@
       }
 
       function initStreamlitCommunication() {
-        if (window.streamlitData) {
-          receiveStreamlitData(window.streamlitData);
+        if (window.projectData) {
+          receiveStreamlitData(window.projectData);
         }
 
-        window.addEventListener("streamlitPayload", (event) => {
-          receiveStreamlitData(event.detail);
+        window.addEventListener("message", (event) => {
+          if (!event.data || event.data.type !== "PROJECT_DATA") {
+            return;
+          }
+          receiveStreamlitData(event.data.payload);
         });
       }
 
       function handleFile(file) {
-        showError(
-          "Please upload your dataset using the Streamlit uploader on the page, not the internal dashboard upload zone.",
-        );
+        return;
       }
 
       fileInput.addEventListener("change", () => {
