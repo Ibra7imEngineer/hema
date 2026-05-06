@@ -579,36 +579,38 @@
         chartHeader.textContent = `${chart_data.seriesName} Trend`;
       }
 
-      async function uploadFile(file) {
-        clearError();
-        const formData = new FormData();
-        formData.append("file", file);
-
-        try {
-          const response = await fetch("/analyze", {
-            method: "POST",
-            body: formData,
-          });
-          const data = await response.json();
-          if (!response.ok) {
-            showError(data.error || "Upload failed. Please try another file.");
-            return;
-          }
-
-          showDashboard();
-          updateSummary(data);
-          renderChart(data.chart_data, data.forecast_data);
-          renderTable(data.columns, data.table_data);
-          setActiveTab("executive");
-        } catch (error) {
-          showError("Unable to upload file. Check your network and try again.");
-          console.error(error);
+      function receiveStreamlitData(payload) {
+        if (!payload) {
+          return;
         }
+
+        if (payload.error) {
+          showError(payload.error);
+          return;
+        }
+
+        clearError();
+        showDashboard();
+        updateSummary(payload);
+        renderChart(payload.chart_data, payload.forecast_data);
+        renderTable(payload.columns, payload.table_data);
+        setActiveTab("executive");
+      }
+
+      function initStreamlitCommunication() {
+        if (window.streamlitData) {
+          receiveStreamlitData(window.streamlitData);
+        }
+
+        window.addEventListener("streamlitPayload", (event) => {
+          receiveStreamlitData(event.detail);
+        });
       }
 
       function handleFile(file) {
-        if (!file) return;
-        uploadFile(file);
+        showError(
+          "Please upload your dataset using the Streamlit uploader on the page, not the internal dashboard upload zone.",
+        );
       }
 
       fileInput.addEventListener("change", () => {
@@ -629,8 +631,7 @@
       uploadView.addEventListener("drop", (event) => {
         event.preventDefault();
         uploadView.classList.remove("border-orange-400/50");
-        const file = event.dataTransfer.files[0];
-        handleFile(file);
+        handleFile(null);
       });
 
       tabButtons.forEach((button) => {
@@ -639,7 +640,7 @@
         });
       });
 
-      setActiveTab("executive");
+      initStreamlitCommunication();
     </script>
   </body>
 </html>
